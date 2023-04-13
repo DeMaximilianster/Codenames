@@ -2,6 +2,7 @@ from random import choice, shuffle
 from typing import Dict, Optional, List
 import asyncio
 from json import load
+
 from aiogram import Dispatcher, Bot, types
 from words import WORDS
 
@@ -32,13 +33,12 @@ HELP_STRING = "Игровое поле представляет собой по�
 
 
 class Player:
-
     def __init__(self, user: types.User):
         self.user_id = user.id
+        self.name = user.full_name
 
 
 class Team:
-
     def __init__(self):
         self.players: Dict[int, Player] = dict()
         self.captain: Optional[Player] = None
@@ -55,7 +55,7 @@ class Team:
     def delete_player(self, user_id: int):
         self.players.pop(user_id)
 
-    def chose_captain(self) -> Player:
+    def choose_captain(self) -> Player:
         self.captain = choice(list(self.players.values()))
         return self.captain
 
@@ -64,10 +64,10 @@ class Team:
 
 
 class Game:
-
     def __init__(self, chat: types.Chat):
         self.is_finished = False
         self.chat_id: int = chat.id
+        self.lobby_message: Optional[types.Message] = None
         self.blue_players = Team()
         self.red_players = Team()
         self.words: List[str] = []
@@ -122,6 +122,7 @@ class Game:
 
     async def end_game(self):
         self.is_finished = True
+        GAME_MANAGER.delete_game(self.chat_id)
 
     async def victory_check(self) -> bool:
         if self.blue_points == self.blue_to_win:
@@ -132,8 +133,7 @@ class Game:
             await BOT.send_message(self.chat_id, "Все красные агенты найдены. Красная команда победила!")
             await self.end_game()
             return True
-        else:
-            return False
+        return False
 
     async def word_chosen(self, user: types.User, index: int):
         text = ""
@@ -197,6 +197,12 @@ class Game:
         await self.blue_map.edit_reply_markup(keyboard)
         await self.red_map.edit_reply_markup(keyboard)
 
+    async def form_lobby_text(self):
+        text = 'Игра создана! Жмите кнопки ниже чтобы присоединиться\n\n'
+        text += f'🔵Синяя команда: {",".join([player[1].name for player in self.blue_players.players.items()])}\n'
+        text += f'🔴Красная команда: {",".join([player[1].name for player in self.red_players.players.items()])}\n'
+        return text
+
     async def start_game(self):
         self.create_words()
         if choice(["blue", "red"]) == "blue":
@@ -209,20 +215,20 @@ class Game:
             self.current_team = self.red_players
         shuffle(self.grid)
         self.text_grid = [f"{GRID_CODES_TO_EMOJIS[self.grid[i]]}{self.words[i]}" for i in range(WORDS_IN_GAME)]
-        self.blue_players.chose_captain()
-        self.red_players.chose_captain()
+        self.blue_players.choose_captain()
+        self.red_players.choose_captain()
         await self.send_maps_to_captains()
         self.update_keyboard()
 
 
 class GameManager:
-
     def __init__(self):
         self.is_active = True
         self.games: Dict[int, Game] = dict()
 
-    def new_game(self, chat: types.Chat):
+    def new_game(self, chat: types.Chat) -> Game:
         self.games[chat.id] = Game(chat)
+        return self.games[chat.id]
 
     def get_game(self, chat_id: int) -> Game:
         return self.games[chat_id]
@@ -244,43 +250,53 @@ GAME_MANAGER = GameManager()
 
 
 @DP.message_handler(commands=["start"])
-async def hello(message: types.Message):
+async def hello_handler(message: types.Message):
     await message.reply("Hello!")
 
 
 @DP.message_handler(commands=["help"])
-async def help(message: types.Message):
+async def help_handler(message: types.Message):
     await message.reply(HELP_STRING)
 
 
 @DP.message_handler(commands=["new_game", "create_game"])
-async def new_game(message: types.Message):
-    GAME_MANAGER.new_game(message.chat)
+async def new_game_handler(message: types.Message):
+    game = GAME_MANAGER.new_game(message.chat)
     text = "Игра создана! Жмите кнопки ниже чтобы присоединиться"
     keyboard = types.InlineKeyboardMarkup()
     keyboard.insert(types.InlineKeyboardButton("Зайти за синих", callback_data="join_blue"))
     keyboard.add(types.InlineKeyboardButton("Зайти за красных", callback_data="join_red"))
-    await message.reply(text, reply_markup=keyboard)
+    game.lobby_message = await message.reply(text, reply_markup=keyboard)
 
 
 @DP.callback_query_handler(lambda call: call.data == "join_blue")
-async def join_blue(call: types.CallbackQuery):
+async def join_blue_handler(call: types.CallbackQuery):
     game = GAME_MANAGER.get_game(call.message.chat.id)
     game.join_blue(call.from_user)
     await call.answer()
     await BOT.send_message(game.chat_id, f"{call.from_user.first_name} теперь в синей команде")
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.insert(types.InlineKeyboardButton("Зайти за синих", callback_data="join_blue"))
+    keyboard.add(types.InlineKeyboardButton("Зайти за красных", callback_data="join_red"))
+    await BOT.edit_message_text(await game.form_lobby_text(), game.chat_id,
+                                game.lobby_message.message_id, reply_markup=keyboard)
 
 
 @DP.callback_query_handler(lambda call: call.data == "join_red")
-async def join_red(call: types.CallbackQuery):
+async def join_red_handler(call: types.CallbackQuery):
     game = GAME_MANAGER.get_game(call.message.chat.id)
     game.join_red(call.from_user)
     await call.answer()
     await BOT.send_message(game.chat_id, f"{call.from_user.first_name} теперь в красной команде")
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.insert(types.InlineKeyboardButton("Зайти за синих", callback_data="join_blue"))
+    keyboard.add(types.InlineKeyboardButton("Зайти за красных", callback_data="join_red"))
+    await BOT.edit_message_text(await game.form_lobby_text(), game.chat_id,
+                                game.lobby_message.message_id, reply_markup=keyboard)
 
 
 @DP.message_handler(commands=["start_game"])
-async def start_game(message: types.Message):
+async def start_game_handler(message: types.Message):
     game = GAME_MANAGER.get_game(message.chat.id)
     if game.is_start_possible():
         await game.start_game()
@@ -288,7 +304,7 @@ async def start_game(message: types.Message):
 
 
 @DP.callback_query_handler(lambda call: call.data.isdigit())
-async def button_pressed(call: types.CallbackQuery):
+async def button_pressed_handler(call: types.CallbackQuery):
     game = GAME_MANAGER.get_game(call.message.chat.id)
     if game.current_team.is_captain(call.from_user.id):
         await call.answer("Капитанам не положено жмакать")
@@ -301,7 +317,7 @@ async def button_pressed(call: types.CallbackQuery):
 
 
 @DP.callback_query_handler(lambda call: call.data == "end_turn")
-async def end_turn(call: types.CallbackQuery):
+async def end_turn_handler(call: types.CallbackQuery):
     game = GAME_MANAGER.get_game(call.message.chat.id)
     if game.current_team.is_captain(call.from_user.id):
         await call.answer("Капитанам не положено жмакать")
