@@ -4,32 +4,15 @@ import asyncio
 from json import load
 
 from aiogram import Dispatcher, Bot, types
+
 from words import WORDS
+from constants import *
 
 with open("tokens.json", encoding="utf-8") as FILE:
     TOKEN = load(FILE)["telegram"][0]
 
 BOT = Bot(TOKEN)
 DP = Dispatcher(BOT)
-GRID_EMOJIS_TO_CODES = {"🟦": "blue", "🟥": "red", "👹": "killer", "😐": "neutral"}
-GRID_CODES_TO_EMOJIS = {"blue": "🟦", "red": "🟥", "killer": "👹", "neutral": "😐"}
-WORDS_IN_GAME = 24
-COLUMNS_IN_GAME = 3
-ROWS_IN_GAME = 8
-BLUE_HINT = "Сейчас ход синих. Синий капитан, дайте подсказку и количество слов, которые подходят к вашей подсказке," \
-            "Например 'Зелёный, 4'. Синяя команда, обсудите какие, как вам кажется, слова относятся к этой" \
-            " подсказке и нажмите на них. После чего окончите ход"
-RED_HINT = "Сейчас ход красных. Красный капитан, дайте подсказку и количество слов, которые подходят к вашей подсказке," \
-           "Например 'Фрукт, 2'. Красная команда, обсудите какие, как вам кажется, слова относятся к этой" \
-           " подсказке и нажмите на них. После чего окончите ход"
-HELP_STRING = "Игровое поле представляет собой поле 3х8 из некоторых слов. Каждое слово является либо синим агентом "\
-              "(🟦), либо красным агентом (🟥), либо прохожим (😐), либо убийцей (👹). Капитаны знают, какое слово " \
-              "чем является, остальные участники не знают. Задача капитанов — " \
-              "в свой ход давать подсказки своей команде чтоб " \
-              "они разгадывали агентов своего цвета. Подсказка должна быть одним словом. Если игрок выбрал " \
-              "агента своего цвета, то ход продолжается. " \
-              "Если выбран прохожий или агент противника, ход прекращается. Если выбран убийца, то команда " \
-              "сразу проигрывает"
 
 
 class Player:
@@ -170,7 +153,8 @@ class Game:
             self.red_points += 1
             await self.victory_check()
         else:
-            Exception()
+            raise Exception("Something went wrong.")
+
         self.text_grid[index] = "✅"
         await self.update_maps()
         await BOT.send_message(self.chat_id, text)
@@ -249,6 +233,13 @@ class GameManager:
 GAME_MANAGER = GameManager()
 
 
+def generate_join_keyboard():
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.insert(types.InlineKeyboardButton("Зайти за синих", callback_data="join_blue"))
+    keyboard.add(types.InlineKeyboardButton("Зайти за красных", callback_data="join_red"))
+    return keyboard
+
+
 @DP.message_handler(commands=["start"])
 async def hello_handler(message: types.Message):
     await message.reply("Hello!")
@@ -263,11 +254,7 @@ async def help_handler(message: types.Message):
 async def new_game_handler(message: types.Message):
     game = GAME_MANAGER.new_game(message.chat)
     text = "Игра создана! Жмите кнопки ниже чтобы присоединиться"
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.insert(types.InlineKeyboardButton("Зайти за синих", callback_data="join_blue"))
-    keyboard.add(types.InlineKeyboardButton("Зайти за красных", callback_data="join_red"))
-    game.lobby_message = await message.reply(text, reply_markup=keyboard)
-
+    game.lobby_message = await message.reply(text, reply_markup=generate_join_keyboard())
 
 @DP.callback_query_handler(lambda call: call.data == "join_blue")
 async def join_blue_handler(call: types.CallbackQuery):
@@ -275,11 +262,8 @@ async def join_blue_handler(call: types.CallbackQuery):
     game.join_blue(call.from_user)
     await call.answer()
     await BOT.send_message(game.chat_id, f"{call.from_user.first_name} теперь в синей команде")
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.insert(types.InlineKeyboardButton("Зайти за синих", callback_data="join_blue"))
-    keyboard.add(types.InlineKeyboardButton("Зайти за красных", callback_data="join_red"))
     await BOT.edit_message_text(await game.form_lobby_text(), game.chat_id,
-                                game.lobby_message.message_id, reply_markup=keyboard)
+                                game.lobby_message.message_id, reply_markup=generate_join_keyboard())
 
 
 @DP.callback_query_handler(lambda call: call.data == "join_red")
@@ -288,19 +272,24 @@ async def join_red_handler(call: types.CallbackQuery):
     game.join_red(call.from_user)
     await call.answer()
     await BOT.send_message(game.chat_id, f"{call.from_user.first_name} теперь в красной команде")
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.insert(types.InlineKeyboardButton("Зайти за синих", callback_data="join_blue"))
-    keyboard.add(types.InlineKeyboardButton("Зайти за красных", callback_data="join_red"))
     await BOT.edit_message_text(await game.form_lobby_text(), game.chat_id,
-                                game.lobby_message.message_id, reply_markup=keyboard)
+                                game.lobby_message.message_id, reply_markup=generate_join_keyboard())
 
 
 @DP.message_handler(commands=["start_game"])
 async def start_game_handler(message: types.Message):
-    game = GAME_MANAGER.get_game(message.chat.id)
+    try:
+        game = GAME_MANAGER.get_game(message.chat.id)
+    except KeyError:
+        await message.reply("Чтобы начать игру, её надо создать командой /new_game")
+        return
+
     if game.is_start_possible():
         await game.start_game()
         await game.new_turn()
+    else:
+        await message.reply("Для начала игры в каждой команде должно быть хотя бы два игрока")
+
 
 
 @DP.callback_query_handler(lambda call: call.data.isdigit())
